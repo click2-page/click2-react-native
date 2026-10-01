@@ -1,0 +1,25 @@
+{
+  "name": "@click2/react-native",
+  "version": "0.3.0",
+  "description": "click2 deep links for React Native: Universal Links / App Links, deferred deep links, in-app events.",
+  "license": "Apache-2.0",
+  "repository": "github:click2-page/click2-react-native",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "README.md", "LICENSE", "NOTICE"],
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "vitest run",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "peerDependencies": {
+    "react-native": ">=0.72"
+  },
+  "peerDependenciesMeta": {
+    "react-native": { "optional": true }
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}
