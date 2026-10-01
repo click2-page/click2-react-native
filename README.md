@@ -49,4 +49,8 @@ Native's built-ins are incomplete).
 Native setup is the same as for native apps: Associated Domains (`applinks:acme.click2.page`) on iOS and an
 `autoVerify` intent filter on Android (see the click2 dashboard → Developers).
 
-Status: 0.3.0, not published yet (needs the npm org). License: Apache 2.0.
+Example app with an on-device self-test (Android, Hermes release build): [example/](example/).
+
+Releasing: set `version` in package.json and the SDK header in `src/index.ts`, move the CHANGELOG entries under the
+new version, push, then tag `vX.Y.Z`; the release workflow publishes to npm (trusted publishing, with provenance) and
+creates the GitHub Release. License: Apache 2.0.
