@@ -27,7 +27,9 @@ describe("SDK flows", () => {
   beforeEach(() => {
     calls = [];
     sdk = new Click2Sdk();
+    const store = new Map<string, string>();
     sdk.configure({
+      storage: { getItem: async (k) => store.get(k) ?? null, setItem: async (k, v) => void store.set(k, v) },
       hosts: ["acme.click2.page"],
       platform: "ios",
       appVersion: "7.2.0",
@@ -52,7 +54,8 @@ describe("SDK flows", () => {
   });
 
   it("deferred link from pasted text reports the install once; tracking off sends the header and no events", async () => {
-    await sdk.handleDeferredLink("Open https://acme.click2.page/fall now");
+    // At the same time (StrictMode double effects) and again later.
+    await Promise.all([sdk.handleDeferredLink("Open https://acme.click2.page/fall now"), sdk.handleDeferredLink("https://acme.click2.page/fall")]);
     await sdk.handleDeferredLink("https://acme.click2.page/fall");
     await new Promise((r) => setTimeout(r, 10));
     expect(calls.filter((c) => c.body?.type === "install")).toHaveLength(1);
@@ -65,15 +68,21 @@ describe("SDK flows", () => {
   it("Android referrer: a click2 link is resolved; a campaign referrer is reported once", async () => {
     const android = new Click2Sdk();
     let ref = "utm_source=smartlink&smartlink=https%3A%2F%2Facme.click2.page%2Ffall";
-    android.configure({ hosts: ["acme.click2.page"], platform: "android", readInstallReferrer: async () => ref, fetch: (async (url: string, init: RequestInit) => {
+    const mem = (): import("../src/index").Click2Storage => { const m = new Map<string, string>(); return { getItem: async (k) => m.get(k) ?? null, setItem: async (k, v) => void m.set(k, v) }; };
+    android.configure({ storage: mem(), hosts: ["acme.click2.page"], platform: "android", readInstallReferrer: async () => ref, fetch: (async (url: string, init: RequestInit) => {
       calls.push({ method: String(init.method), url, body: init.body ? JSON.parse(String(init.body)) : undefined, headers: {} });
       return answer(200, { deeplinkPath: "deals/fall", webOnly: false, mobileWebOnly: false });
     }) as unknown as typeof fetch });
-    expect(await android.checkDeferredLink()).toMatchObject({ kind: "openRoute", path: "deals/fall" });
+    const [a, b] = await Promise.all([android.checkDeferredLink(), android.checkDeferredLink()]);
+    expect(a).toMatchObject({ kind: "openRoute", path: "deals/fall" });
+    expect(b).toBe(a); // the same single run
     expect(await android.checkDeferredLink()).toBeNull(); // first launch only
+    const old = new Click2Sdk();
+    old.configure({ storage: mem(), hosts: ["acme.click2.page"], platform: "android", readInstallReferrer: async () => ref, firstInstallTime: async () => Date.now() - 30 * 86_400_000 });
+    expect(await old.checkDeferredLink()).toBeNull(); // installed a month ago: an update, not this click
     const other = new Click2Sdk();
     ref = "utm_source=tiktok&utm_medium=paid";
-    other.configure({ hosts: ["acme.click2.page"], platform: "android", readInstallReferrer: async () => ref, fetch: (async (url: string, init: RequestInit) => {
+    other.configure({ storage: mem(), hosts: ["acme.click2.page"], platform: "android", readInstallReferrer: async () => ref, fetch: (async (url: string, init: RequestInit) => {
       calls.push({ method: String(init.method), url, body: init.body ? JSON.parse(String(init.body)) : undefined, headers: {} });
       return answer(204, {});
     }) as unknown as typeof fetch });

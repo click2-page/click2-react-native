@@ -34,6 +34,13 @@ export interface Click2Config {
   attributionWindowMs?: number;
   /** Android: returns the Play install referrer (e.g. from react-native-play-install-referrer), for deferred links. */
   readInstallReferrer?: () => Promise<string | null | undefined>;
+  /**
+   * Android: when the app was first installed (epoch ms, e.g. react-native-device-info getFirstInstallTime). The
+   * referrer is only used within `deferredLinkMaxAgeMs` of it (default 7 days), so an app update shipping the SDK
+   * doesn't replay old referrers. Without it, the referrer is used on the SDK's first run.
+   */
+  firstInstallTime?: () => Promise<number>;
+  deferredLinkMaxAgeMs?: number;
   fetch?: typeof fetch;
   logging?: boolean;
 }
@@ -97,13 +104,16 @@ function webUrl(v: unknown): string | undefined {
   if (typeof v !== "string" || !v) return undefined;
   // As given, only characters that can't appear in a URL encoded (like the native SDKs).
   const encoded = v.trim().replace(/[\s"<>\\^`{|}]/g, (ch) => encodeURIComponent(ch));
-  try {
-    const u = new URL(encoded);
-    return (u.protocol === "https:" || u.protocol === "http:") && u.hostname ? encoded : undefined;
-  } catch {
-    return undefined;
-  }
+  // No URL class: React Native's built-in one (Hermes, RN 0.7x) doesn't implement its getters.
+  return /^https?:\/\/[^/?#@\s]+\.[^/?#@\s]+(?:[/?#]|$)/i.test(encoded) ? encoded : undefined;
 }
+
+/** a=b&c=d without URLSearchParams (not fully implemented in React Native). */
+const query = (params: Record<string, string | undefined>) =>
+  Object.entries(params)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v!)}`)
+    .join("&");
 const str = (v: unknown) => (typeof v === "string" && v !== "" ? v : undefined);
 const bool = (v: unknown) => v === true || v === 1 || v === "true" || v === "1";
 
@@ -175,6 +185,16 @@ const K = { tracking: "click2.tracking", install: "click2.install_reported", use
 class Click2Sdk {
   private config?: Required<Pick<Click2Config, "hosts" | "platform" | "timeoutMs" | "attributionWindowMs">> & Click2Config;
   private memory = new Map<string, string>();
+  private inFlight = new Map<string, Promise<unknown>>();
+
+  /** One run at a time per key (StrictMode double effects, remounts, overlapping calls). */
+  private once<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const running = this.inFlight.get(key) as Promise<T> | undefined;
+    if (running) return running;
+    const p = work().finally(() => this.inFlight.delete(key));
+    this.inFlight.set(key, p);
+    return p;
+  }
 
   configure(config: Click2Config) {
     if (!config.hosts.length) throw new Error("Click2.configure needs at least one host");
@@ -185,10 +205,22 @@ class Click2Sdk {
     if (!this.config) throw new Error("Call Click2.configure(...) first");
     return this.config;
   }
-  private async get(key: string) {
-    return this.c.storage ? this.c.storage.getItem(key) : (this.memory.get(key) ?? null);
+  private async get(key: string): Promise<string | null> {
+    try {
+      return this.c.storage ? await this.c.storage.getItem(key) : (this.memory.get(key) ?? null);
+    } catch (err) {
+      this.log(`storage read failed: ${String(err)}`);
+      return null;
+    }
   }
   private async set(key: string, value: string | null) {
+    try {
+      await this.setUnsafe(key, value);
+    } catch (err) {
+      this.log(`storage write failed: ${String(err)}`);
+    }
+  }
+  private async setUnsafe(key: string, value: string | null) {
     if (value === null) {
       if (this.c.storage?.removeItem) await this.c.storage.removeItem(key);
       else if (this.c.storage) await this.c.storage.setItem(key, "");
@@ -224,9 +256,13 @@ class Click2Sdk {
     const headers: Record<string, string> = { accept: "application/json", "x-click2-sdk": `react-native/0.3.0` };
     if (!(await this.isTrackingEnabled())) headers["x-tracking-disabled"] = "1";
     if (body !== undefined) headers["content-type"] = "application/json";
+    // One budget for the call, the retry included.
+    const deadline = Date.now() + this.c.timeoutMs;
     for (let attempt = 1; attempt <= 2; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return undefined;
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), this.c.timeoutMs);
+      const timer = setTimeout(() => ctrl.abort(), remaining);
       try {
         const res = await f(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: ctrl.signal });
         const text = await res.text();
@@ -252,8 +288,7 @@ class Click2Sdk {
   async resolve(url: string): Promise<Click2Result> {
     const host = linkHost(url, this.c.hosts);
     if (!host) return { kind: "notAClick2Link" };
-    const q = new URLSearchParams({ url, platform: String(this.c.platform) });
-    if (this.c.appVersion) q.set("appVersion", this.c.appVersion.slice(0, 32));
+    const q = query({ url, platform: String(this.c.platform), appVersion: this.c.appVersion?.slice(0, 32) });
     const res = await this.request("GET", `https://${host}/api/v1/resolve?${q}`);
     const result = res ? mapResolve(url, String(this.c.platform), res.status, res.json) : ({ kind: "failed", reason: "network_error", url } as const);
     if (result.kind === "openRoute" || result.kind === "openWeb") {
@@ -269,30 +304,62 @@ class Click2Sdk {
   async handleDeferredLink(textOrUrl: string): Promise<Click2Result | null> {
     const link = linkInText(textOrUrl, this.c.hosts);
     if (!link) return null;
-    void this.reportInstall(link);
+    void this.reportInstall(link).catch(() => undefined);
     return this.resolve(link);
   }
 
+  /** For apps that recorded installs themselves before: never report an install from this device. */
+  async markInstallReported() {
+    await this.set(K.install, "1");
+  }
+
+  /** For apps that handled deferred links themselves before: don't read this install's referrer. */
+  async markDeferredLinkChecked() {
+    await this.set(K.referrer, "1");
+  }
+
   /** Android: the deferred deep link from the Play install referrer, on the first launch only. */
-  async checkDeferredLink(): Promise<Click2Result | null> {
+  checkDeferredLink(): Promise<Click2Result | null> {
+    return this.once("deferred", () => this.checkDeferredLinkNow());
+  }
+
+  private async checkDeferredLinkNow(): Promise<Click2Result | null> {
     if (this.c.platform !== "android" || !this.c.readInstallReferrer || (await this.get(K.referrer)) === "1") return null;
+    // Without persistent storage every cold start would replay the referrer.
+    if (!this.c.storage) {
+      this.log("checkDeferredLink needs `storage` (e.g. AsyncStorage); skipped");
+      return null;
+    }
+    if (this.c.firstInstallTime) {
+      const installed = await this.c.firstInstallTime().catch(() => 0);
+      if (Date.now() - installed > (this.c.deferredLinkMaxAgeMs ?? 7 * 86_400_000)) {
+        // An update or restore long after the install: the referrer isn't this user's click.
+        await this.set(K.referrer, "1");
+        return null;
+      }
+    }
     const referrer = await this.c.readInstallReferrer().catch(() => undefined);
     if (referrer === undefined) return null; // not available yet: try next launch
     await this.set(K.referrer, "1");
     const link = linkFromReferrer(referrer, this.c.hosts);
     if (!link) {
       // A Play Store campaign without a click2 link: click2 reads its UTM tags.
-      if (referrer && referrer.includes("utm_") && (await this.isTrackingEnabled())) {
-        void this.request("POST", `https://${this.c.hosts[0]}/api/v1/events`, { type: "install", referrer: referrer.slice(0, 1000), platform: "android", appVersion: this.c.appVersion, userId: (await this.get(K.user)) || undefined });
+      if (referrer && /utm_|gclid=|gbraid=|wbraid=/.test(referrer) && (await this.isTrackingEnabled())) {
+        void this.request("POST", `https://${this.c.hosts[0]}/api/v1/events`, { type: "install", referrer: referrer.slice(0, 1000), platform: "android", appVersion: this.c.appVersion, userId: (await this.get(K.user)) || undefined }).catch(() => undefined);
       }
       return null;
     }
-    void this.reportInstall(link);
+    void this.reportInstall(link).catch(() => undefined);
     return this.resolve(link);
   }
 
-  private async reportInstall(link: string) {
+  private reportInstall(link: string): Promise<void> {
+    return this.once("install", () => this.reportInstallNow(link));
+  }
+
+  private async reportInstallNow(link: string) {
     if (!(await this.isTrackingEnabled()) || (await this.get(K.install)) === "1") return;
+    if (!this.c.storage) return this.log("install reports need `storage` (e.g. AsyncStorage); skipped");
     const host = linkHost(link, this.c.hosts)!;
     const res = await this.request("POST", `https://${host}/api/v1/events`, { type: "install", url: link, platform: String(this.c.platform), appVersion: this.c.appVersion, userId: (await this.get(K.user)) || undefined });
     if (res && res.status < 500) await this.set(K.install, "1");

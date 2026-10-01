@@ -19,7 +19,9 @@ Click2.configure({
   platform: Platform.OS,
   appVersion: "7.2.0",
   storage: AsyncStorage,
-  // readInstallReferrer: () => PlayInstallReferrer.getInstallReferrerInfo().then((i) => i.installReferrer),
+  // Android deferred links (react-native-play-install-referrer takes a callback):
+  // readInstallReferrer: () => new Promise((resolve) => PlayInstallReferrer.getInstallReferrerInfo((info, error) => resolve(error ? undefined : info?.installReferrer))),
+  // firstInstallTime: () => DeviceInfo.getFirstInstallTime(),   // react-native-device-info
 });
 
 const route = (r) => {
@@ -37,6 +39,12 @@ await Click2.setUserId(user.id);
 await Click2.track("purchase", { revenue: 24.99, currency: "USD", properties: { sku: "A1" } });
 await Click2.setTrackingEnabled(false);   // consent
 ```
+
+`storage` is required for deferred links and install reports (otherwise every cold start would count again). Apps
+that handled deferred links or installs themselves before: `Click2.markDeferredLinkChecked()` /
+`Click2.markInstallReported()` at launch. Not in this SDK yet: Apple Search Ads attribution (needs a native module;
+use the iOS SDK's `reportAppleSearchAdsAttribution` from a native wrapper). Uses no `URL`/`URLSearchParams` (React
+Native's built-ins are incomplete).
 
 Native setup is the same as for native apps: Associated Domains (`applinks:acme.click2.page`) on iOS and an
 `autoVerify` intent filter on Android (see the click2 dashboard → Developers).
