@@ -10,7 +10,8 @@
     "dist",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc -p .",
@@ -29,5 +30,7 @@
   "devDependencies": {
     "typescript": "^5.6.0",
     "vitest": "^3.0.0"
-  }
+  },
+  "homepage": "https://click2.page",
+  "bugs": "https://github.com/click2-page/click2-react-native/issues"
 }
