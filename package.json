@@ -3,7 +3,10 @@
   "version": "0.3.0",
   "description": "click2 deep links for React Native: Universal Links / App Links, deferred deep links, in-app events.",
   "license": "Apache-2.0",
-  "repository": "github:click2-page/click2-react-native",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/click2-page/click2-react-native.git"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
