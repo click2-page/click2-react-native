@@ -30,7 +30,13 @@ jobs:
           grep -q "^## \[${V}\]" CHANGELOG.md || { echo "CHANGELOG.md has no ${V} section"; exit 1; }
       - run: npm ci
       - run: npm install -g npm@latest
-      - run: npm publish --access public --provenance
+      - name: Publish to npm (skipped when this version is already there, e.g. published by hand)
+        run: |
+          if npm view "@click2/react-native@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then
+            echo "already on npm"
+          else
+            npm publish --access public --provenance
+          fi
       - name: Release notes from the changelog
         run: awk -v v="${GITHUB_REF_NAME#v}" '$0 ~ "^## \\[" v "\\]" {f=1; next} /^(## )?\[/ {f=0} f' CHANGELOG.md > notes.md
       - uses: softprops/action-gh-release@v3
