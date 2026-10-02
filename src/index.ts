@@ -323,7 +323,7 @@ class Click2Sdk {
 
   private async request(method: "GET" | "POST", url: string, body?: unknown): Promise<{ status: number; json: unknown } | undefined> {
     const f = this.c.fetch ?? fetch;
-    const headers: Record<string, string> = { accept: "application/json", "x-click2-sdk": `react-native/0.3.1` };
+    const headers: Record<string, string> = { accept: "application/json", "x-click2-sdk": `react-native/0.3.2` };
     if (!(await this.isTrackingEnabled())) headers["x-tracking-disabled"] = "1";
     if (body !== undefined) headers["content-type"] = "application/json";
     // No retry: fetch doesn't say whether a failed request reached the server, and a repeated resolve or report

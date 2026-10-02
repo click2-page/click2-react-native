@@ -4,6 +4,8 @@ All notable changes to the click2 React Native SDK. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-02
+
 ### Changed
 
 - Campaign install reports (Play install referrer without a click2 link) now send up to 4,000 characters of the
@@ -54,6 +56,7 @@ Hermes.
 - `setUserId`, `setTrackingEnabled` (consent), `markInstallReported`, `markDeferredLinkChecked`.
 - Helpers: `linkHost`, `linkInText`, `linkFromReferrer`, `mapResolve`.
 
-[Unreleased]: https://github.com/click2-page/click2-react-native/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/click2-page/click2-react-native/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/click2-page/click2-react-native/releases/tag/v0.3.2
 [0.3.1]: https://github.com/click2-page/click2-react-native/releases/tag/v0.3.1
 [0.3.0]: https://github.com/click2-page/click2-react-native/releases/tag/v0.3.0
