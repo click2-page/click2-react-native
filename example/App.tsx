@@ -97,7 +97,7 @@ async function runSelfTest(log: (c: Check) => void) {
   expectResult('pasted link', await ios.handleDeferredLink(`Open https://${HOST}/droid now`), 'openRoute ios/home');
   check('pasted text without link', (await ios.handleDeferredLink('hello')) === null);
 
-  // Network failure: AbortController, timeout and retry on Hermes.
+  // Network failure: AbortController and timeout on Hermes.
   const offline = new Click2Sdk();
   offline.configure({ hosts: [HOST], platform: Platform.OS, fetch: deadServer, timeoutMs: 3000 });
   const started = Date.now();

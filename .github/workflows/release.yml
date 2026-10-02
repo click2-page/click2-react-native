@@ -29,7 +29,8 @@ jobs:
           grep -q "react-native/${V}\`" src/index.ts || { echo "the x-click2-sdk header in src/index.ts is not $V"; exit 1; }
           grep -q "^## \[${V}\]" CHANGELOG.md || { echo "CHANGELOG.md has no ${V} section"; exit 1; }
       - run: npm ci
-      - run: npm install -g npm@latest
+      # Pinned: trusted publishing needs npm 11.5.1 or later; bump deliberately.
+      - run: npm install -g npm@11.6.2
       - name: Publish to npm (skipped when this version is already there, e.g. published by hand)
         run: |
           if npm view "@click2/react-native@${GITHUB_REF_NAME#v}" version >/dev/null 2>&1; then

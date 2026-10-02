@@ -4,6 +4,27 @@ All notable changes to the click2 React Native SDK. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Fixed
+
+- Organic Play installs (`utm_source=google-play&utm_medium=organic`, or google-play with no other campaign keys) and
+  click2 referrers whose link is for another host are no longer reported as campaign installs. Campaign keys are
+  matched as parameter names with a value (`utm_*`, `gclid`, `gbraid`, `wbraid`); new helper `isCampaignReferrer`.
+- Install reports answered with HTTP 408 or 429 are retried later instead of being treated as final.
+- Android deferred links: a referrer link that couldn't be resolved (offline, 5xx) is kept with an attempt count and
+  tried again on later launches (up to 5, within `deferredLinkMaxAgeMs`), and an install report without a final answer
+  is sent again, like the Android SDK. `checkDeferredLink` runs once per launch.
+- **Behaviour change:** on Android the install referrer is only used when `firstInstallTime` is provided (a warning is
+  logged once otherwise), so an app update shipping the SDK can't replay an old referrer as a new install. The README
+  sample now includes it.
+- `configure` validates and normalizes `hosts` once (trimmed, lowercased, trailing dot removed, duplicates dropped)
+  and that list is used everywhere, so `track()` attribution works when hosts were given with capitals or a trailing
+  dot. Anything but a bare host name now throws.
+- A failed request is no longer retried: `fetch` doesn't say whether it reached the server, and a repeated resolve
+  could count the open twice.
+- Link matching decodes the whole path before splitting it, like the native SDKs: `/api%2Fx` is a service path, not a
+  link (new shared fixture case; new shared `campaign-referrer.json`).
+- Release workflow: npm is pinned (11.6.2) instead of `npm@latest`.
+
 ## [0.3.0] - 2026-10-01
 
 First release, on par with the iOS and Android SDKs 0.3.0. Pure TypeScript, no native code of its own; works on

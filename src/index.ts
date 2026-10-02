@@ -23,7 +23,11 @@ export interface Click2Storage {
 }
 
 export interface Click2Config {
-  /** The team's link hosts, e.g. ["acme.click2.page"] (staging builds: ["acme-test.click2.page"]). */
+  /**
+   * The team's link hosts, e.g. ["acme.click2.page"] (staging builds: ["acme-test.click2.page"]). Bare host names;
+   * spaces, letter case and a trailing dot don't matter. The first one gets reports without a link of their own
+   * (Play Store campaign installs, events without a recent link), so list a link host first.
+   */
   hosts: string[];
   platform: Click2Platform | string;
   appVersion?: string;
@@ -35,9 +39,10 @@ export interface Click2Config {
   /** Android: returns the Play install referrer (e.g. from react-native-play-install-referrer), for deferred links. */
   readInstallReferrer?: () => Promise<string | null | undefined>;
   /**
-   * Android: when the app was first installed (epoch ms, e.g. react-native-device-info getFirstInstallTime). The
-   * referrer is only used within `deferredLinkMaxAgeMs` of it (default 7 days), so an app update shipping the SDK
-   * doesn't replay old referrers. Without it, the referrer is used on the SDK's first run.
+   * Android, required with `readInstallReferrer`: when the app was first installed (epoch ms, e.g.
+   * react-native-device-info getFirstInstallTime). The referrer is only used within `deferredLinkMaxAgeMs` of it
+   * (default 7 days), so an app update shipping the SDK doesn't replay old referrers. Without it the referrer isn't
+   * used at all.
    */
   firstInstallTime?: () => Promise<number>;
   deferredLinkMaxAgeMs?: number;
@@ -73,7 +78,23 @@ export type Click2Result =
   | { kind: "notAClick2Link" };
 
 const SERVICE_PATHS = new Set(["api", "hooks", ".well-known", "robots.txt", "favicon.ico", "apple-app-site-association"]);
-const normalizeHost = (h: string) => h.toLowerCase().replace(/\.+$/, "");
+/** Trimmed, lowercased, without trailing dots: how hosts are stored and compared. */
+const normalizeHost = (h: string) => h.trim().toLowerCase().replace(/\.+$/, "");
+const LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
+const HOST_NAME = new RegExp(`^(?=.{1,253}$)${LABEL}(?:\\.${LABEL})*$`);
+
+/**
+ * Decodes %XX escapes and never throws. Runs that aren't valid UTF-8 keep their non-ASCII escapes, but ASCII ones
+ * (like %2F) are still decoded, so link matching agrees with the native SDKs.
+ */
+const percentDecode = (s: string) =>
+  s.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+    try {
+      return decodeURIComponent(run);
+    } catch {
+      return run.replace(/%([0-7][0-9a-f])/gi, (_, h: string) => String.fromCharCode(parseInt(h, 16)));
+    }
+  });
 
 /** The normalized host of a click2 link on `hosts`, or undefined. Lenient about characters browsers leave unencoded. */
 export function linkHost(url: string, hosts: string[]): string | undefined {
@@ -84,18 +105,16 @@ export function linkHost(url: string, hosts: string[]): string | undefined {
   const [hostPart, port] = authority.split(":");
   if (port !== undefined && port !== "443") return undefined;
   const host = normalizeHost(hostPart ?? "");
-  if (!hosts.map((h) => normalizeHost(h.trim())).includes(host)) return undefined;
-  const path = (m[2] ?? "").replace(/^\/+|\/+$/g, "");
+  if (!hosts.map(normalizeHost).includes(host)) return undefined;
+  // Decoded before splitting (like the native SDKs): an encoded slash (/api%2Fx) ends the first segment too.
+  const path = percentDecode(m[2] ?? "").replace(/^\/+|\/+$/g, "");
   if (!path) return undefined;
-  const [first = "", rest] = [path.split("/")[0], path.split("/").slice(1).join("/")];
-  let decoded = first;
-  try {
-    decoded = decodeURIComponent(first);
-  } catch {
-    /* keep as is */
-  }
-  if (SERVICE_PATHS.has(decoded.toLowerCase())) return undefined;
-  if (decoded === "p" && !rest?.replace(/^\/+|\/+$/g, "")) return undefined;
+  const slash = path.indexOf("/");
+  const first = slash < 0 ? path : path.slice(0, slash);
+  const rest = slash < 0 ? "" : path.slice(slash + 1);
+  if (SERVICE_PATHS.has(first.toLowerCase())) return undefined;
+  // /p/<route> passthrough links need a route.
+  if (first === "p" && !rest.replace(/^\/+|\/+$/g, "")) return undefined;
   return host;
 }
 
@@ -180,12 +199,55 @@ export function linkFromReferrer(referrer: string | null | undefined, hosts: str
   return link && linkHost(link, hosts) ? link : undefined;
 }
 
-const K = { tracking: "click2.tracking", install: "click2.install_reported", user: "click2.user_id", last: "click2.last_link", referrer: "click2.referrer_checked" };
+/**
+ * Whether a Play install referrer without a click2 link is a campaign worth reporting: UTM tags or a Google Ads click
+ * id (test/fixtures/campaign-referrer.json). Not organic Play installs (utm_source=google-play&utm_medium=organic, or
+ * google-play with nothing else) nor click2 referrers whose link is for another host.
+ */
+export function isCampaignReferrer(referrer: string | null | undefined): boolean {
+  if (!referrer?.trim()) return false;
+  const text = referrer.includes("=") ? referrer : percentDecode(referrer);
+  if (!text.includes("=")) return false;
+  const params = new Map<string, string>();
+  for (const p of text.split("&")) {
+    const [k, v] = p.split(/=(.*)/s);
+    if (v !== undefined) params.set(percentDecode(k!).trim().toLowerCase(), percentDecode(v).trim().toLowerCase());
+  }
+  if (params.has("smartlink") || params.get("utm_source") === "smartlink") return false;
+  const keys = new Set([...params].filter(([k, v]) => v && (k.startsWith("utm_") || CLICK_IDS.has(k))).map(([k]) => k));
+  if (params.get("utm_source") === "google-play") {
+    if (params.get("utm_medium") === "organic") return false;
+    keys.delete("utm_source");
+    keys.delete("utm_medium");
+  }
+  return keys.size > 0;
+}
+const CLICK_IDS = new Set(["gclid", "gbraid", "wbraid"]);
+
+/** A final answer to an install report: 2xx, or a 4xx other than 408 (timeout) and 429 (rate limited). */
+const isFinal = (status: number) => (status >= 200 && status < 300) || (status >= 400 && status < 500 && status !== 408 && status !== 429);
+
+const K = {
+  tracking: "click2.tracking",
+  install: "click2.install_reported",
+  user: "click2.user_id",
+  last: "click2.last_link",
+  referrer: "click2.referrer_checked",
+  /** Android: a referrer link not resolved yet (offline, server error): {"link", "attempts"}. */
+  pending: "click2.pending_link",
+  /** Android: a referrer link whose install isn't reported yet. */
+  pendingInstall: "click2.pending_install",
+};
+/** How often a pending referrer link is tried (one per launch), like the Android SDK. */
+const MAX_ATTEMPTS = 5;
 
 class Click2Sdk {
   private config?: Required<Pick<Click2Config, "hosts" | "platform" | "timeoutMs" | "attributionWindowMs">> & Click2Config;
   private memory = new Map<string, string>();
   private inFlight = new Map<string, Promise<unknown>>();
+  /** The deferred-link check ran in this process (once per launch, like the native SDKs). */
+  private deferredDone = false;
+  private warnedNoInstallTime = false;
 
   /** One run at a time per key (StrictMode double effects, remounts, overlapping calls). */
   private once<T>(key: string, work: () => Promise<T>): Promise<T> {
@@ -197,8 +259,16 @@ class Click2Sdk {
   }
 
   configure(config: Click2Config) {
-    if (!config.hosts.length) throw new Error("Click2.configure needs at least one host");
-    this.config = { timeoutMs: 10_000, attributionWindowMs: 7 * 86_400_000, ...config };
+    if (!config.hosts?.length) throw new Error("Click2.configure needs at least one host");
+    for (const h of config.hosts) {
+      if (typeof h !== "string" || !HOST_NAME.test(normalizeHost(h))) {
+        throw new Error(`Invalid click2 host "${String(h)}": use a bare host name like acme.click2.page (no scheme, port, path or user info)`);
+      }
+    }
+    // Normalized once; this list is what's matched, stored and called.
+    const hosts = [...new Set(config.hosts.map(normalizeHost))];
+    this.config = { timeoutMs: 10_000, attributionWindowMs: 7 * 86_400_000, ...config, hosts };
+    this.deferredDone = false;
   }
 
   private get c() {
@@ -256,32 +326,26 @@ class Click2Sdk {
     const headers: Record<string, string> = { accept: "application/json", "x-click2-sdk": `react-native/0.3.0` };
     if (!(await this.isTrackingEnabled())) headers["x-tracking-disabled"] = "1";
     if (body !== undefined) headers["content-type"] = "application/json";
-    // One budget for the call, the retry included.
-    const deadline = Date.now() + this.c.timeoutMs;
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) return undefined;
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), remaining);
+    // No retry: fetch doesn't say whether a failed request reached the server, and a repeated resolve or report
+    // could count the open or install twice.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), this.c.timeoutMs);
+    try {
+      const res = await f(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: ctrl.signal });
+      const text = await res.text();
+      let json: unknown;
       try {
-        const res = await f(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: ctrl.signal });
-        const text = await res.text();
-        let json: unknown;
-        try {
-          json = text ? JSON.parse(text) : undefined;
-        } catch {
-          json = undefined;
-        }
-        return { status: res.status, json };
-      } catch (err) {
-        this.log(`${method} failed (attempt ${attempt}): ${String(err)}`);
-        // Retry a GET once on a network failure; never a POST (it may have arrived).
-        if (method !== "GET" || ctrl.signal.aborted) return undefined;
-      } finally {
-        clearTimeout(timer);
+        json = text ? JSON.parse(text) : undefined;
+      } catch {
+        json = undefined;
       }
+      return { status: res.status, json };
+    } catch (err) {
+      this.log(`${method} failed: ${String(err)}`);
+      return undefined;
+    } finally {
+      clearTimeout(timer);
     }
-    return undefined;
   }
 
   /** Resolves a click2 link (Universal Link / App Link / custom handling); notAClick2Link for anything else. */
@@ -318,39 +382,91 @@ class Click2Sdk {
     await this.set(K.referrer, "1");
   }
 
-  /** Android: the deferred deep link from the Play install referrer, on the first launch only. */
+  /**
+   * Android: the deferred deep link from the Play install referrer, on the first launch after the install. Needs
+   * `storage`, `readInstallReferrer` and `firstInstallTime`. Once per launch (concurrent calls share the run). A link
+   * that can't be resolved yet (offline, server error) is kept and tried again on later launches, up to 5 times
+   * within `deferredLinkMaxAgeMs`; an install report that got no final answer is sent again too.
+   */
   checkDeferredLink(): Promise<Click2Result | null> {
-    return this.once("deferred", () => this.checkDeferredLinkNow());
+    if (this.deferredDone) return Promise.resolve(null);
+    return this.once("deferred", () => this.checkDeferredLinkNow().finally(() => (this.deferredDone = true)));
   }
 
   private async checkDeferredLinkNow(): Promise<Click2Result | null> {
-    if (this.c.platform !== "android" || !this.c.readInstallReferrer || (await this.get(K.referrer)) === "1") return null;
+    if (this.c.platform !== "android" || !this.c.readInstallReferrer) return null;
     // Without persistent storage every cold start would replay the referrer.
     if (!this.c.storage) {
       this.log("checkDeferredLink needs `storage` (e.g. AsyncStorage); skipped");
       return null;
     }
-    if (this.c.firstInstallTime) {
-      const installed = await this.c.firstInstallTime().catch(() => 0);
-      if (Date.now() - installed > (this.c.deferredLinkMaxAgeMs ?? 7 * 86_400_000)) {
-        // An update or restore long after the install: the referrer isn't this user's click.
-        await this.set(K.referrer, "1");
-        return null;
-      }
-    }
-    const referrer = await this.c.readInstallReferrer().catch(() => undefined);
-    if (referrer === undefined) return null; // not available yet: try next launch
-    await this.set(K.referrer, "1");
-    const link = linkFromReferrer(referrer, this.c.hosts);
-    if (!link) {
-      // A Play Store campaign without a click2 link: click2 reads its UTM tags.
-      if (referrer && /utm_|gclid=|gbraid=|wbraid=/.test(referrer) && (await this.isTrackingEnabled())) {
-        void this.request("POST", `https://${this.c.hosts[0]}/api/v1/events`, { type: "install", referrer: referrer.slice(0, 1000), platform: "android", appVersion: this.c.appVersion, userId: (await this.get(K.user)) || undefined }).catch(() => undefined);
+    // Without the install time an app update shipping the SDK would replay an old referrer as a new install.
+    if (!this.c.firstInstallTime) {
+      if (!this.warnedNoInstallTime) {
+        this.warnedNoInstallTime = true;
+        console.warn("[Click2] checkDeferredLink needs `firstInstallTime` (e.g. react-native-device-info getFirstInstallTime); the install referrer is not used");
       }
       return null;
     }
-    void this.reportInstall(link).catch(() => undefined);
-    return this.resolve(link);
+    const installed = await this.c.firstInstallTime().catch(() => 0);
+    const fresh = Date.now() - installed <= (this.c.deferredLinkMaxAgeMs ?? 7 * 86_400_000);
+
+    if ((await this.get(K.referrer)) === "1") {
+      // A later launch: finish what the first one couldn't.
+      const pendingInstall = await this.get(K.pendingInstall);
+      if (pendingInstall) {
+        if (fresh) void this.reportInstall(pendingInstall).catch(() => undefined);
+        else await this.set(K.pendingInstall, null);
+      }
+      const pending = this.parsePending(await this.get(K.pending));
+      if (!pending) return null;
+      if (!fresh || pending.attempts >= MAX_ATTEMPTS) {
+        await this.set(K.pending, null);
+        return null;
+      }
+      return this.resolvePending(pending.link, pending.attempts);
+    }
+    if (!fresh) {
+      // An update or restore long after the install: the referrer isn't this user's click.
+      await this.set(K.referrer, "1");
+      return null;
+    }
+    const referrer = await this.c.readInstallReferrer().catch(() => undefined);
+    if (referrer === undefined) return null; // not available yet: try next launch
+    const link = linkFromReferrer(referrer, this.c.hosts);
+    const tracking = await this.isTrackingEnabled();
+    // Saved before anything is sent, so the link and its install survive the app being killed.
+    await this.set(K.pending, link ? JSON.stringify({ link, attempts: 0 }) : null);
+    await this.set(K.pendingInstall, link && tracking ? link : null);
+    await this.set(K.referrer, "1");
+    if (!link) {
+      // A Play Store campaign without a click2 link: click2 reads its UTM tags (once, best effort).
+      if (tracking && isCampaignReferrer(referrer)) {
+        void this.request("POST", `https://${this.c.hosts[0]}/api/v1/events`, { type: "install", referrer: referrer!.slice(0, 1000), platform: "android", appVersion: this.c.appVersion, userId: (await this.get(K.user)) || undefined }).catch(() => undefined);
+      }
+      return null;
+    }
+    if (tracking) void this.reportInstall(link).catch(() => undefined);
+    return this.resolvePending(link, 0);
+  }
+
+  private parsePending(value: string | null): { link: string; attempts: number } | undefined {
+    try {
+      const p = JSON.parse(value || "null") as { link?: unknown; attempts?: unknown } | null;
+      if (p && typeof p.link === "string" && linkHost(p.link, this.c.hosts)) return { link: p.link, attempts: typeof p.attempts === "number" ? p.attempts : 0 };
+    } catch {
+      /* none */
+    }
+    return undefined;
+  }
+
+  private async resolvePending(link: string, attemptsBefore: number): Promise<Click2Result> {
+    const attempts = attemptsBefore + 1;
+    await this.set(K.pending, JSON.stringify({ link, attempts }));
+    const result = await this.resolve(link);
+    const transient = result.kind === "failed" && (result.reason === "network_error" || result.reason === "server_error");
+    if (!transient || attempts >= MAX_ATTEMPTS) await this.set(K.pending, null);
+    return result;
   }
 
   private reportInstall(link: string): Promise<void> {
@@ -358,11 +474,21 @@ class Click2Sdk {
   }
 
   private async reportInstallNow(link: string) {
-    if (!(await this.isTrackingEnabled()) || (await this.get(K.install)) === "1") return;
+    if (!(await this.isTrackingEnabled())) {
+      // Consent withdrawn: a pending report is dropped, like the native SDKs.
+      await this.set(K.pendingInstall, null);
+      return;
+    }
+    if ((await this.get(K.install)) === "1") return;
     if (!this.c.storage) return this.log("install reports need `storage` (e.g. AsyncStorage); skipped");
-    const host = linkHost(link, this.c.hosts)!;
+    const host = linkHost(link, this.c.hosts);
+    if (!host) return;
     const res = await this.request("POST", `https://${host}/api/v1/events`, { type: "install", url: link, platform: String(this.c.platform), appVersion: this.c.appVersion, userId: (await this.get(K.user)) || undefined });
-    if (res && res.status < 500) await this.set(K.install, "1");
+    // No answer, 5xx, 408 or 429: tried again later (the next deferred link, or the next launch on Android).
+    if (res && isFinal(res.status)) {
+      await this.set(K.install, "1");
+      await this.set(K.pendingInstall, null);
+    }
   }
 
   /** In-app event (e.g. track("purchase", { revenue: 24.99, currency: "USD" })), credited to the last link (7 days). */
@@ -374,7 +500,7 @@ class Click2Sdk {
     try {
       const last = JSON.parse((await this.get(K.last)) || "null") as { url: string; host: string; at: number; variant?: string } | null;
       const age = last ? Date.now() - last.at : -1;
-      if (last && age >= 0 && age <= this.c.attributionWindowMs && this.c.hosts.map(normalizeHost).includes(last.host)) {
+      if (last && age >= 0 && age <= this.c.attributionWindowMs && this.c.hosts.includes(last.host)) {
         link = last.url;
         variant = last.variant;
         host = last.host;
