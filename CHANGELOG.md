@@ -13,6 +13,7 @@ All notable changes to the click2 React Native SDK. The format follows [Keep a C
 ### Tests
 
 - Shared fixture `campaign-referrer.json`: a Meta ads install referrer case (reported as a campaign install).
+
 ### Docs
 
 - NOTICE names the React Native SDK; README points to Apps & SDKs in the click2 dashboard.
