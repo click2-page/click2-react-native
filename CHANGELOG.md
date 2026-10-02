@@ -4,6 +4,8 @@ All notable changes to the click2 React Native SDK. The format follows [Keep a C
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-02
+
 ### Fixed
 
 - Organic Play installs (`utm_source=google-play&utm_medium=organic`, or google-play with no other campaign keys) and
@@ -38,5 +40,6 @@ Hermes.
 - `setUserId`, `setTrackingEnabled` (consent), `markInstallReported`, `markDeferredLinkChecked`.
 - Helpers: `linkHost`, `linkInText`, `linkFromReferrer`, `mapResolve`.
 
-[Unreleased]: https://github.com/click2-page/click2-react-native/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/click2-page/click2-react-native/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/click2-page/click2-react-native/releases/tag/v0.3.1
 [0.3.0]: https://github.com/click2-page/click2-react-native/releases/tag/v0.3.0

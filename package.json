@@ -1,6 +1,6 @@
 {
   "name": "@click2/react-native",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "click2 deep links for React Native: Universal Links / App Links, deferred deep links, in-app events.",
   "license": "Apache-2.0",
   "repository": {
