@@ -442,7 +442,7 @@ class Click2Sdk {
     if (!link) {
       // A Play Store campaign without a click2 link: click2 reads its UTM tags (once, best effort).
       if (tracking && isCampaignReferrer(referrer)) {
-        void this.request("POST", `https://${this.c.hosts[0]}/api/v1/events`, { type: "install", referrer: referrer!.slice(0, 1000), platform: "android", appVersion: this.c.appVersion, userId: (await this.get(K.user)) || undefined }).catch(() => undefined);
+        void this.request("POST", `https://${this.c.hosts[0]}/api/v1/events`, { type: "install", referrer: referrer!.slice(0, 4000), platform: "android", appVersion: this.c.appVersion, userId: (await this.get(K.user)) || undefined }).catch(() => undefined);
       }
       return null;
     }

@@ -4,6 +4,19 @@ All notable changes to the click2 React Native SDK. The format follows [Keep a C
 
 ## [Unreleased]
 
+### Changed
+
+- Campaign install reports (Play install referrer without a click2 link) now send up to 4,000 characters of the
+  referrer instead of 1,000. Meta ads referrers carry encrypted JSON in `utm_content` and are often longer than 1,000
+  characters; a truncated one can't be decrypted by the server.
+
+### Tests
+
+- Shared fixture `campaign-referrer.json`: a Meta ads install referrer case (reported as a campaign install).
+### Docs
+
+- NOTICE names the React Native SDK; README points to Apps & SDKs in the click2 dashboard.
+
 ## [0.3.1] - 2026-10-02
 
 ### Fixed

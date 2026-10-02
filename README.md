@@ -59,7 +59,7 @@ use the iOS SDK's `reportAppleSearchAdsAttribution` from a native wrapper). Uses
 Native's built-ins are incomplete).
 
 Native setup is the same as for native apps: Associated Domains (`applinks:acme.click2.page`) on iOS and an
-`autoVerify` intent filter on Android (see the click2 dashboard → Developers).
+`autoVerify` intent filter on Android (see the click2 dashboard → Apps & SDKs).
 
 Example app with an on-device self-test (Android, Hermes release build): [example/](example/).
 

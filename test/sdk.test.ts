@@ -93,6 +93,30 @@ describe("SDK flows", () => {
     expect(calls.at(-1)!.body).toMatchObject({ type: "install", referrer: "utm_source=tiktok&utm_medium=paid" });
   });
 
+  it("Android referrer: a long Meta install referrer is sent intact; longer ones are capped at 4,000 characters", async () => {
+    const meta = (hexLength: number) => "utm_source=apps.facebook.com&utm_campaign=fb4a&utm_content=" +
+      encodeURIComponent(JSON.stringify({ app: 1234567890, t: 1700000000, source: { data: "ab12".repeat(hexLength / 4), nonce: "0123456789abcdef01234567" } }));
+    const mem = (): Click2Storage => { const m = new Map<string, string>(); return { getItem: async (k) => m.get(k) ?? null, setItem: async (k, v) => void m.set(k, v) }; };
+    const report = async (ref: string) => {
+      const posted: Record<string, unknown>[] = [];
+      const android = new Click2Sdk();
+      android.configure({ storage: mem(), hosts: ["acme.click2.page"], platform: "android", readInstallReferrer: async () => ref, firstInstallTime: async () => Date.now() - 60_000, fetch: (async (_url: string, init: RequestInit) => {
+        if (init.body) posted.push(JSON.parse(String(init.body)));
+        return answer(204, {});
+      }) as unknown as typeof fetch });
+      expect(await android.checkDeferredLink()).toBeNull();
+      await new Promise((r) => setTimeout(r, 10));
+      return posted;
+    };
+    const ref = meta(2800);
+    expect(ref.length).toBeGreaterThan(2900);
+    expect(ref.length).toBeLessThan(3100);
+    expect(isCampaignReferrer(ref)).toBe(true);
+    expect(await report(ref)).toEqual([expect.objectContaining({ type: "install", referrer: ref })]);
+    const long = meta(6000);
+    expect((await report(long))[0]!.referrer).toBe(long.slice(0, 4000));
+  });
+
   it("install reports answered with 429 or 408 are sent again with the next deferred link", async () => {
     const statuses = [429, 408, 204];
     const posts: number[] = [];
